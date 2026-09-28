@@ -15,6 +15,7 @@ from src.triage import determine_triage
 
 ROOT = Path(__file__).resolve().parent
 UPLOADS = ROOT / "data" / "uploads"
+DEMO_ASSETS = ROOT / "demo_assets"
 UPLOADS.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="NetraSetu", page_icon="👁️", layout="wide")
@@ -113,32 +114,49 @@ def show_quality(label: str, quality: dict) -> None:
 
 
 def seed_demonstration_cases() -> int:
-    if db.list_patients():
-        return 0
-    label_csv = ROOT / "data" / "raw" / "aptos" / "train.csv"
-    image_dir = ROOT / "data" / "raw" / "aptos" / "train_images"
-    if not label_csv.exists() or not image_dir.exists():
-        return 0
-    labels = pd.read_csv(label_csv)
-    selected: dict[int, list[Path]] = {}
-    for grade in (0, 2, 4):
-        accepted: list[Path] = []
-        for image_id in labels.loc[labels["diagnosis"] == grade, "id_code"].head(80):
-            path = image_dir / f"{image_id}.png"
-            if path.exists() and assess_quality(path)["accepted"]:
-                accepted.append(path)
-            if len(accepted) == 2:
-                break
-        if len(accepted) < 2:
-            accepted = [image_dir / f"{value}.png" for value in labels.loc[labels["diagnosis"] == grade, "id_code"].head(2)]
-        selected[grade] = accepted
+    existing_ids = {patient["local_patient_id"] for patient in db.list_patients()}
+    bundled_names = {
+        0: ["002c21358ce6.png", "005b95c28852.png"],
+        2: ["000c1434d8d7.png", "00b74780d31d.png"],
+        4: ["0083ee8054ee.png", "0243404e8a00.png"],
+    }
+    selected = {
+        grade: [DEMO_ASSETS / name for name in names]
+        for grade, names in bundled_names.items()
+    }
+    bundled_available = all(path.exists() for paths in selected.values() for path in paths)
+
+    if not bundled_available:
+        label_csv = ROOT / "data" / "raw" / "aptos" / "train.csv"
+        image_dir = ROOT / "data" / "raw" / "aptos" / "train_images"
+        if not label_csv.exists() or not image_dir.exists():
+            return 0
+        labels = pd.read_csv(label_csv)
+        selected = {}
+        for grade in (0, 2, 4):
+            accepted: list[Path] = []
+            for image_id in labels.loc[labels["diagnosis"] == grade, "id_code"].head(80):
+                path = image_dir / f"{image_id}.png"
+                if path.exists() and assess_quality(path)["accepted"]:
+                    accepted.append(path)
+                if len(accepted) == 2:
+                    break
+            if len(accepted) < 2:
+                accepted = [
+                    image_dir / f"{value}.png"
+                    for value in labels.loc[labels["diagnosis"] == grade, "id_code"].head(2)
+                ]
+            selected[grade] = accepted
 
     people = [
         ("NS-1001", "Kamala Devi", 58, "Female", "Rampur", 0, []),
         ("NS-1002", "Ramesh Kumar", 63, "Male", "Lakshmipur", 2, ["Blurred vision"]),
         ("NS-1003", "Savitri Bai", 67, "Female", "Rampur", 4, ["New flashes or many floaters"]),
     ]
+    created = 0
     for index, (local_id, name, age, sex, village, grade, symptoms) in enumerate(people):
+        if local_id in existing_ids:
+            continue
         patient_id = db.create_patient(
             {
                 "local_patient_id": local_id,
@@ -177,7 +195,8 @@ def seed_demonstration_cases() -> int:
                 "triage": triage,
             }
         )
-    return len(people)
+        created += 1
+    return created
 
 
 def village_dashboard() -> None:
@@ -211,11 +230,16 @@ def village_dashboard() -> None:
             st.dataframe(frame, width="stretch", hide_index=True)
         else:
             st.info("No active cases yet. Start a screening or load the demonstration cases.")
-        if not db.list_patients():
+        demo_ids = {"NS-1001", "NS-1002", "NS-1003"}
+        existing_ids = {patient["local_patient_id"] for patient in db.list_patients()}
+        if not demo_ids.issubset(existing_ids):
             if st.button("Load three demonstration cases", type="primary"):
                 count = seed_demonstration_cases()
-                st.success(f"Loaded {count} synthetic demonstration cases.")
-                st.rerun()
+                if count:
+                    st.success(f"Loaded {count} synthetic demonstration cases.")
+                    st.rerun()
+                else:
+                    st.error("Demo images are unavailable. Upload the demo_assets folder with the application.")
 
     with tabs[1]:
         render_new_screening()
